@@ -105,7 +105,16 @@ class BleAdvBaseDevice:
         self.config.seed = 0
         advs: list[BleAdvAdvertisement] = self.codec.encode_advs(enc_cmd, self.config)
         for adapter_id in self.adapter_ids:
-            qi = BleAdvQueueItem(enc_cmd.cmd, self.repeat, self.duration, self.interval, [x.to_raw() for x in advs], self.codec.ign_duration)
+            qi = BleAdvQueueItem(
+                enc_cmd.cmd,
+                self.repeat,
+                self.duration,
+                self.interval,
+                [x.to_raw() for x in advs],
+                self.codec.ign_duration,
+                self.codec.own_address,
+                self.codec.channel_map,
+            )
             await self.coordinator.advertise(adapter_id, self.unique_id, qi)
 
     async def advertise(self, ent_attr: BleAdvEntAttr) -> None:

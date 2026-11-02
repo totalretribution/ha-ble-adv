@@ -25,6 +25,7 @@ from homeassistant.components.shelly.coordinator import ShellyRpcCoordinator
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, ServiceCall
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntry, format_mac
@@ -75,9 +76,10 @@ def device() -> _Device:
 class MockEspProxy:
     """Mock an ESPHome ble_adv_proxy."""
 
-    def __init__(self, hass: HomeAssistant, name: str) -> None:
+    def __init__(self, hass: HomeAssistant, name: str, adv_v2: bool = False) -> None:
         self.hass = hass
         self._name = name
+        self._adv_v2 = adv_v2
         self._bn = self._name.replace("-", "_")
         self._dev_id = f"{self._bn}_dev_id"
         self._adv_calls = []
@@ -107,7 +109,24 @@ class MockEspProxy:
         setup_schema = {vol.Required(CONF_ATTR_IGN_DURATION): int}
         adv_schema = {vol.Required(CONF_ATTR_RAW): str}
         self.hass.services.async_register("esphome", f"{self._bn}_setup_svc_v0", self._call_setup, vol.Schema(setup_schema))
-        self.hass.services.async_register("esphome", f"{self._bn}_adv_svc_v1", self._call_adv, vol.Schema(adv_schema))
+        if self._adv_v2:
+            # Same types as the ESPHome integration gives to string, float and string[] service args
+            adv_schema = {
+                vol.Required(x): y
+                for x, y in [
+                    ("raw", cv.string),
+                    ("duration", vol.Coerce(float)),
+                    ("repeat", vol.Coerce(float)),
+                    ("ignored_advs", [cv.string]),
+                    ("ignored_duration", vol.Coerce(float)),
+                    ("own_address", cv.string),
+                    ("channel_map", vol.Coerce(float)),
+                    ("interval", vol.Coerce(float)),
+                ]
+            }
+            self.hass.services.async_register("esphome", f"{self._bn}_adv_svc_v2", self._call_adv, vol.Schema(adv_schema))
+        else:
+            self.hass.services.async_register("esphome", f"{self._bn}_adv_svc_v1", self._call_adv, vol.Schema(adv_schema))
         esp_conf = _MockEsphomeConfigEntry(self._bn)
         await self.hass.config_entries.async_add(esp_conf)
         dr.async_get(self.hass).devices[self._dev_id] = mock.AsyncMock()

@@ -236,3 +236,39 @@ async def test_full_diagnostics(coord: BleAdvCoordinator) -> None:
     with mock.patch("ble_adv.coordinator.async_get_integration", side_effect=_mock_async_get_integration):
         diag = await coord.full_diagnostic_dump()
         assert len(diag["coordinator"]) > 0
+
+
+async def test_coordinator_own_address(hass: HomeAssistant, coord: BleAdvCoordinator) -> None:
+    """Test advertising from a given address: adv_svc_v2 if the proxy has it, else adv_svc_v1 with the proxy's own address."""
+    t1 = MockEspProxy(hass, "test_v2", adv_v2=True)
+    await t1.setup()
+    t2 = MockEspProxy(hass, "test_v1")
+    await t2.setup()
+    assert coord.bt_managers[1].adapters["esp/test_v2"].supports_own_address
+    assert not coord.bt_managers[1].adapters["esp/test_v1"].supports_own_address
+    raw = BleAdvAdvertisement(0xFF, b"dtwithminlen", 0x1A).to_raw()
+    qi = BleAdvQueueItem(0x10, 10, 50, 20, [raw], 2, "66:55:44:33:22:11", 0x01)
+    await coord.advertise("esp/test_v2", "q1", qi)
+    await coord.bt_managers[1].adapters["esp/test_v2"].drain()
+    # 10 adverts every 20ms, split by 100ms: 2 continuous sends of 100ms at 20ms
+    call = {
+        "raw": raw.hex(),
+        "duration": 100,
+        "repeat": 1,
+        "ignored_advs": [raw.hex()],
+        "ignored_duration": 2,
+        "own_address": "66:55:44:33:22:11",
+        "channel_map": 0x01,
+        "interval": 20,
+    }
+    assert t1.get_adv_calls() == [call, call]
+    qi = BleAdvQueueItem(0x10, 10, 50, 20, [raw], 2, "66:55:44:33:22:11", 0x01)
+    await coord.advertise("esp/test_v1", "q1", qi)
+    await coord.bt_managers[1].adapters["esp/test_v1"].drain()
+    assert t2.get_adv_calls() == [{"raw": raw.hex()}, {"raw": raw.hex()}]
+    qi = BleAdvQueueItem(0x10, 1, 50, 20, [raw], 2)
+    await coord.advertise("esp/test_v2", "q1", qi)
+    await coord.bt_managers[1].adapters["esp/test_v2"].drain()
+    # Without own address, adv_svc_v2 is called as adv_svc_v1
+    call = {**call, "duration": 20, "own_address": "", "channel_map": 0, "interval": 0}
+    assert t1.get_adv_calls() == [call]

@@ -18,7 +18,8 @@ from .const import DOMAIN
 
 ESPHOME_DOMAIN = "esphome"
 ESPHOME_BLE_ADV_RECV_EVENT = f"{ESPHOME_DOMAIN}.{DOMAIN}.raw_adv"
-CONF_ADV_SVCS = ["adv_svc_v1", "adv_svc"]
+CONF_ADV_SVCS = ["adv_svc_v2", "adv_svc_v1", "adv_svc"]
+CONF_ADV_SVC_OWN_ADDRESS = "adv_svc_v2"
 CONF_SETUP_SVCS = ["setup_svc_v0"]
 CONF_ATTR_RAW = "raw"
 CONF_ATTR_DURATION = "duration"
@@ -29,6 +30,9 @@ CONF_ATTR_IGN_CIDS = "ignored_cids"
 CONF_ATTR_IGN_MACS = "ignored_macs"
 CONF_ATTR_IGN_DURATION = "ignored_duration"
 CONF_ATTR_ORIGIN = "orig"
+CONF_ATTR_OWN_ADDRESS = "own_address"
+CONF_ATTR_CHANNEL_MAP = "channel_map"
+CONF_ATTR_INTERVAL = "interval"
 
 
 class BleAdvEsphomeService:
@@ -74,6 +78,11 @@ class BleAdvEsphomeAdapterV2(BleAdvAdapter):
         """Diagnostic dump."""
         return {**super().diagnostic_dump(), "adv_svc": self._adv_svc.svc_name, "setup_svc": self._setup_svc.svc_name}
 
+    @property
+    def supports_own_address(self) -> bool:
+        """Return True if the proxy has the adv service with own address / channels."""
+        return self._adv_svc.svc_name is not None and self._adv_svc.svc_name.endswith(CONF_ADV_SVC_OWN_ADDRESS)
+
     def is_valid(self) -> bool:
         """Return if the adapter is valid."""
         return self._setup_svc.svc_name is not None and self._adv_svc.svc_name is not None
@@ -105,6 +114,13 @@ class BleAdvEsphomeAdapterV2(BleAdvAdapter):
             CONF_ATTR_IGN_DURATION: item.ign_duration,
             CONF_ATTR_IGN_ADVS: [item.data.hex()],
         }
+        if item.own_address is not None and self.supports_own_address:
+            # One continuous advert from the given address, every 'interval' ms for 'repeat' times
+            params[CONF_ATTR_DURATION] = item.interval * item.repeat
+            params[CONF_ATTR_REPEAT] = 1
+            params[CONF_ATTR_OWN_ADDRESS] = item.own_address
+            params[CONF_ATTR_CHANNEL_MAP] = item.channel_map
+            params[CONF_ATTR_INTERVAL] = item.interval
         await self._adv_svc.call(params)
         await asyncio.sleep(0.0009 * item.repeat * item.interval)
 

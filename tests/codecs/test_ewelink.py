@@ -1,8 +1,11 @@
+# ruff: noqa: S101
 """eWeLink Unit Tests."""
 
 import pytest
+from ble_adv.codecs.const import ATTR_ON, LIGHT_TYPE
+from ble_adv.codecs.models import BleAdvAdvertisement, BleAdvCodec, BleAdvConfig, BleAdvEncCmd, BleAdvEntAttr
 
-from . import _TestEncoderBase, _TestEncoderFull
+from . import CODECS, _TestEncoderBase, _TestEncoderFull
 
 
 @pytest.mark.parametrize(
@@ -10,6 +13,8 @@ from . import _TestEncoderBase, _TestEncoderFull
     [
         ("ewelink_v0/p3", 0xFF, "FF00EE1BC878F64A4491D2E2C76D48546D6EEA0B7351EAADACB1"),
         ("ewelink_v0/r", 0x05, "FFFFEE1BC878F64A4190F63AFFADD337080D8968103289CE5D7D"),
+        ("ewelink_tp02", 0x05, "898AEE1BC878F64A0000481A05080500010000000000006E70E3"),
+        ("ewelink_tp02", 0x05, "898AEE1BC878F64A000043C80208050008000000000000A32648"),
     ],
 )
 class TestEncoderEwelink(_TestEncoderBase):
@@ -250,3 +255,79 @@ class TestEncoderEwelinkNoDirect(_TestEncoderFull):
     """eWeLink Encoder / Decoder No Direct tests."""
 
     _with_reverse = False
+
+
+@pytest.mark.parametrize(
+    _TestEncoderFull.PARAM_NAMES,
+    [
+        # POWER, remote 0x1A05, no group
+        (
+            "ewelink_tp02",
+            "0201021B05898AEE1BC878F64A0000481A05080500010000000000006E70E3",
+            "cmd: 0x01, param: 0x00, args: [0,0,0]",
+            "id: 0x00001A05, index: 0, tx: 72, seed: 0x006E",
+            "light_0: ['on'] / {'on': 'toggle'}",
+        ),
+        # GROUP 1 button, also a toggle
+        (
+            "ewelink_tp02",
+            "0201021B05898AEE1BC878F64A0000461A05080501090000000000006465CD",
+            "cmd: 0x09, param: 0x00, args: [0,0,0]",
+            "id: 0x00001A05, index: 1, tx: 70, seed: 0x0064",
+            "light_0: ['on'] / {'on': 'toggle'}",
+        ),
+        # WARMER, group 1
+        (
+            "ewelink_tp02",
+            "0201021B05898AEE1BC878F64A0000471A05080501070000000000007A7D7A",
+            "cmd: 0x07, param: 0x00, args: [0,0,0]",
+            "id: 0x00001A05, index: 1, tx: 71, seed: 0x007A",
+            "light_0: ['cmd'] / {'sub_type': 'cww', 'cmd': 'K-', 'step': 0.1}",
+        ),
+        # BRIGHTER, group 2
+        (
+            "ewelink_tp02",
+            "0201021B05898AEE1BC878F64A0000331A0508050204000000000000D044EF",
+            "cmd: 0x04, param: 0x00, args: [0,0,0]",
+            "id: 0x00001A05, index: 2, tx: 51, seed: 0x00D0",
+            "light_0: ['cmd'] / {'sub_type': 'cww', 'cmd': 'B+', 'step': 0.1}",
+        ),
+        # DIMMER, remote 0xC802, group 1
+        (
+            "ewelink_tp02",
+            "0201021B05898AEE1BC878F64A00002FC802080501050000000000008B46E8",
+            "cmd: 0x05, param: 0x00, args: [0,0,0]",
+            "id: 0x0000C802, index: 1, tx: 47, seed: 0x008B",
+            "light_0: ['cmd'] / {'sub_type': 'cww', 'cmd': 'B-', 'step': 0.1}",
+        ),
+    ],
+)
+class TestEncoderEwelinkRemoteNoDirect(_TestEncoderFull):
+    """eWeLink 2.4G CCT panel remote: remote presses, decoded only."""
+
+    _with_reverse = False
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_ewelink_remote_on_off(on: bool) -> None:
+    """ON and OFF are both sent as the power toggle, from the remote's address on channel 37."""
+    codec = CODECS["ewelink_tp02"]
+    assert codec.own_address == "66:55:44:33:22:11"
+    assert codec.channel_map == 0x01
+    enc_cmds = codec.ent_to_enc(BleAdvEntAttr([ATTR_ON], {ATTR_ON: on}, LIGHT_TYPE, 0), BleAdvCodec.DEF_TRANS_NAME)
+    assert enc_cmds == [BleAdvEncCmd(0x01)]
+    conf = BleAdvConfig(0x1A05, 0)
+    conf.tx_count = 0x48
+    conf.seed = 0x6E
+    assert codec.encode_advs(enc_cmds[0], conf)[0].to_raw() == bytes.fromhex("0201021B05898AEE1BC878F64A0000481A05080500010000000000006E70E3")
+
+
+def test_ewelink_remote_bad_id_suffix() -> None:
+    """An advert with valid CRC but unknown bytes after the remote ID is not decoded."""
+    codec = CODECS["ewelink_tp02"]
+    conf = BleAdvConfig(0x1A05, 0)
+    conf.seed = 0x6E
+    raw = bytearray(codec.encode_advs(BleAdvEncCmd(0x01), conf)[0].raw)
+    raw[13] = 0x09  # 0x08 0x05 after the remote ID becomes 0x09 0x05
+    raw[-2:] = codec._crc(raw[8:-2]).to_bytes(2, "little")  # noqa: SLF001
+    assert codec.decode_adv(BleAdvAdvertisement(0x05, bytes(raw), 0x02)) == (None, None)

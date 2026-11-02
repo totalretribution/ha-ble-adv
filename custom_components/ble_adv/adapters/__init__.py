@@ -32,20 +32,35 @@ class BleAdvAdapterAdvItem:
     repeat: int
     data: bytes
     ign_duration: int
+    own_address: str | None = None
+    channel_map: int = 0
 
     def __repr__(self) -> str:
-        return f"duration: {self.interval}ms, repeat: {self.repeat}, {self.data.hex().upper()}"
+        own = f", from: {self.own_address}, channels: 0x{self.channel_map:X}" if self.own_address is not None else ""
+        return f"duration: {self.interval}ms, repeat: {self.repeat}{own}, {self.data.hex().upper()}"
 
 
 class BleAdvQueueItem:
     """MultiQueue Item."""
 
-    def __init__(self, key: int | None, repeat: int, delay_after: int, interval: int, data: list[bytes], ign_duration: int) -> None:
+    def __init__(
+        self,
+        key: int | None,
+        repeat: int,
+        delay_after: int,
+        interval: int,
+        data: list[bytes],
+        ign_duration: int,
+        own_address: str | None = None,
+        channel_map: int = 0,
+    ) -> None:
         """Init MultiQueue Item."""
         self.key: int | None = key
         self.delay_after: int = delay_after
         self.data: list[bytes] = data
         self.ign_duration = ign_duration
+        self.own_address: str | None = own_address
+        self.channel_map: int = channel_map
         self._repeat: int = repeat if len(data) == 1 else 1
         self._interval: int = interval
         self._adv_items: list[BleAdvAdapterAdvItem] = []
@@ -56,7 +71,11 @@ class BleAdvQueueItem:
         repeats = [adapter_max_repeat] * floor(self._repeat / adapter_max_repeat)
         if (rem_repeats := self._repeat % adapter_max_repeat) > 0:
             repeats.append(rem_repeats)
-        self._adv_items = [BleAdvAdapterAdvItem(self._interval, rep, data, self.ign_duration) for data in self.data for rep in repeats]
+        self._adv_items = [
+            BleAdvAdapterAdvItem(self._interval, rep, data, self.ign_duration, self.own_address, self.channel_map)
+            for data in self.data
+            for rep in repeats
+        ]
 
     def has_next(self) -> bool:
         """Return True if some items remains."""
@@ -128,6 +147,11 @@ class BleAdvAdapter(ABC):
         """Available."""
         return self._opened
 
+    @property
+    def supports_own_address(self) -> bool:
+        """Return True if the adapter can advertise from a given address and channels."""
+        return False
+
     def diagnostic_dump(self) -> dict[str, Any]:
         """Diagnostic dump."""
         dequeueing = self._dequeue_task is not None and not self._dequeue_task.done() and self._processing
@@ -180,6 +204,8 @@ class BleAdvAdapter(ABC):
     async def enqueue(self, queue_id: str, item: BleAdvQueueItem) -> None:
         """Enqueue an Adv in the queue_id."""
         item.split_repeat(self._bunch_adv_time)
+        if item.own_address is not None and not self.supports_own_address:
+            self._add_diag(f"Cannot advertise from {item.own_address}: not supported by this adapter, using its own address.", logging.WARNING)
         async with self._lock:
             tq_ind = self._queues_index.get(queue_id, None)
             if tq_ind is None:

@@ -441,6 +441,8 @@ class BleAdvCodec(ABC):
     interval: int = 30
     repeat: int = 9
     ign_duration: int = 12000
+    own_address: str | None = None  # Address to advertise from, as printed (e.g. '66:55:44:33:22:11'), None for the adapter's own
+    channel_map: int = 0  # Advertising channels: 0 for all, else bit mask 0x01: 37, 0x02: 38, 0x04: 39
     second_type: int = 0
     second_raw: bytes | None = None
 

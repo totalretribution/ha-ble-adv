@@ -10,6 +10,8 @@ from .const import (
     ATTR_CMD,
     ATTR_CMD_BR_DOWN,
     ATTR_CMD_BR_UP,
+    ATTR_CMD_CT_DOWN,
+    ATTR_CMD_CT_UP,
     ATTR_CMD_PAIR,
     ATTR_CMD_TIMER,
     ATTR_CMD_TOGGLE,
@@ -38,6 +40,7 @@ from .models import (
     Trans,
 )
 from .models import EncoderMatcher as EncCmd
+from .utils import crc16_le
 
 
 class EWeLinkCodec(BleAdvCodec):
@@ -80,6 +83,56 @@ class EWeLinkCodec(BleAdvCodec):
         return bytearray([conf.tx_count, *uid, 0x01, enc_cmd.cmd, enc_cmd.param, enc_cmd.arg0, enc_cmd.arg1, enc_cmd.arg2, 0x00, 0x00, conf.seed])
 
 
+class EWeLinkRemoteCodec(BleAdvCodec):
+    """eWeLink 2.4G CCT panel remote codec (e.g. LED Driver 50W-2.4G-CCT, EHC_050S105DN_TP02).
+
+    Not whitened. After the header, the 16 bytes are:
+        0x00 0x00 | tx_count | id (2, as printed on the remote) | 0x08 0x05 | group (index) | cmd | 0x00 x 6 | seed
+    followed by a CRC16 (poly 0x8408 reflected, init 0xAAAA) of these 16 bytes, little endian.
+    The lights only accept it from the remote's fixed random address, on channel 37.
+    """
+
+    ID_SUFFIX: ClassVar[bytes] = bytes([0x08, 0x05])
+
+    _len = 18
+    _tx_max = 256
+    _seed_max = 0xFF
+    duration = 100
+    interval = 20
+    repeat = 25
+    own_address = "66:55:44:33:22:11"
+    channel_map = 0x01
+
+    def _crc(self, buffer: bytes | bytearray) -> int:
+        return crc16_le(buffer, 0xAAAA, ref_in=False, ref_out=False)
+
+    def decrypt(self, buffer: bytearray) -> bytearray | None:
+        """Check the CRC and remove it."""
+        if not self.is_eq(int.from_bytes(buffer[-2:], "little"), self._crc(buffer[:-2]), "crc"):
+            return None
+        return buffer[:-2]
+
+    def encrypt(self, buffer: bytearray) -> bytearray:
+        """Add the CRC."""
+        return buffer + self._crc(buffer).to_bytes(2, "little")
+
+    def convert_to_enc(self, decoded: bytearray) -> tuple[BleAdvEncCmd | None, BleAdvConfig | None]:
+        """Convert a readable buffer into an encoder command and a config."""
+        if not self.is_eq_buf(self.ID_SUFFIX, decoded[3:5], "ID suffix"):
+            return None, None
+        conf = BleAdvConfig()
+        conf.tx_count = decoded[0]
+        conf.id = int.from_bytes(decoded[1:3], "big")
+        conf.index = decoded[5]
+        conf.seed = decoded[13]
+        return BleAdvEncCmd(decoded[6]), conf
+
+    def convert_from_enc(self, enc_cmd: BleAdvEncCmd, conf: BleAdvConfig) -> bytearray:
+        """Convert an encoder command and a config into a readable buffer."""
+        uid = conf.id.to_bytes(2, "big")
+        return bytearray([conf.tx_count, *uid, *self.ID_SUFFIX, conf.index, enc_cmd.cmd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, conf.seed])
+
+
 TRANSLATORS = [
     Trans(DeviceCmd().act(ATTR_CMD, ATTR_CMD_PAIR), EncCmd(0x13).eq("param", 3)).no_direct(),
     Trans(DeviceCmd().act(ATTR_ON, False), EncCmd(0x11).eq("param", 0).eq("arg0", 2).eq("arg1", 0)).no_direct(),
@@ -108,9 +161,23 @@ TRANSLATORS = [
     Trans(Fan6SpeedCmd().act(ATTR_ON, False), EncCmd(0x11).eq("param", 0).eq("arg0", 0)),
 ]
 
+# The lights have no explicit ON / OFF: 0x01 (power) and 0x09 (group 1) toggle them.
+# 0x02 (night), 0x03 / 0x08 (max brightness, max cold) and 0x0A (group 2) are only seen as events.
+REMOTE_TRANSLATORS = [
+    Trans(LightCmd().act(ATTR_ON, True), EncCmd(0x01)).no_reverse(),
+    Trans(LightCmd().act(ATTR_ON, False), EncCmd(0x01)).no_reverse(),
+    Trans(LightCmd().act(ATTR_ON, ATTR_CMD_TOGGLE), EncCmd(0x01)).no_direct(),
+    Trans(LightCmd().act(ATTR_ON, ATTR_CMD_TOGGLE), EncCmd(0x09)).no_direct(),
+    Trans(CTLightCmd().act(ATTR_CMD, ATTR_CMD_BR_UP).eq(ATTR_STEP, 0.1), EncCmd(0x04)).no_direct(),
+    Trans(CTLightCmd().act(ATTR_CMD, ATTR_CMD_BR_DOWN).eq(ATTR_STEP, 0.1), EncCmd(0x05)).no_direct(),
+    Trans(CTLightCmd().act(ATTR_CMD, ATTR_CMD_CT_DOWN).eq(ATTR_STEP, 0.1), EncCmd(0x06)).no_direct(),
+    Trans(CTLightCmd().act(ATTR_CMD, ATTR_CMD_CT_UP).eq(ATTR_STEP, 0.1), EncCmd(0x07)).no_direct(),
+]
+
 STDHDR = [0xEE, 0x1B, 0xC8, 0x78, 0xF6, 0x4A]
 CODECS = [
     EWeLinkCodec().id("ewelink_v0").header([0xFF, 0xFF, *STDHDR]).ble(0x01, 0xFF).prefix([0x05, 0x02]).add_translators(TRANSLATORS),
     EWeLinkCodec().id("ewelink_v0", "p3").header([0xFF, 0x00, *STDHDR]).ble(0x01, 0xFF).prefix([0x05, 0x03]).add_translators(TRANSLATORS),
     EWeLinkCodec().id("ewelink_v0", "r").header([0xFF, 0xFF, *STDHDR]).ble(0x02, 0x05).prefix([0x00, 0x02]).add_translators(TRANSLATORS),
+    EWeLinkRemoteCodec().id("ewelink_tp02").header([0x89, 0x8A, *STDHDR]).ble(0x02, 0x05).prefix([0x00, 0x00]).add_translators(REMOTE_TRANSLATORS),
 ]
